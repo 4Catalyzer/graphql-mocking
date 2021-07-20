@@ -10,6 +10,9 @@
     "browser": true
   },
   "rules": {
-    "prettier/prettier": "error"
+    "no-param-reassign": "off",
+    "no-underscore-dangle": "off",
+    "prettier/prettier": "error",
+    "@typescript-eslint/naming-convention": "off"
   }
 }

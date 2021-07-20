@@ -31,6 +31,8 @@ type Film implements Node {
   """
   producers: [String]
 
+  characters: [Person]
+
   """
   The ISO 8601 date format of film release at original creator country.
   """

@@ -1,3 +1,4 @@
+import { MapperKind, mapSchema } from '@graphql-tools/utils';
 import {
   GraphQLInterfaceType,
   GraphQLObjectType,
@@ -7,8 +8,9 @@ import {
   isSchema,
   isUnionType,
 } from 'graphql';
-import { MapperKind, mapSchema } from '@graphql-tools/utils';
-import Mocks, { isRef } from '.';
+
+import type Mocks from '.';
+import { isRef } from './utils';
 
 export interface MockOptions {
   schema: GraphQLSchema;
@@ -45,12 +47,11 @@ export function addMocksToSchema({
           ...type.toConfig(),
           resolveType: typeResolver,
         });
-      } else {
-        return new GraphQLInterfaceType({
-          ...type.toConfig(),
-          resolveType: typeResolver,
-        });
       }
+      return new GraphQLInterfaceType({
+        ...type.toConfig(),
+        resolveType: typeResolver,
+      });
     },
   });
 
