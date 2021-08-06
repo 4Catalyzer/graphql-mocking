@@ -1,11 +1,13 @@
 /* eslint-disable @typescript-eslint/ban-types */
 import {
   GraphQLInterfaceType,
+  GraphQLNamedType,
   GraphQLObjectType,
   GraphQLOutputType,
   GraphQLResolveInfo,
   GraphQLSchema,
   defaultFieldResolver,
+  getNamedType,
   getNullableType,
   isAbstractType,
   isEnumType,
@@ -160,8 +162,10 @@ class Mocks {
     }
   }
 
-  private getType(typeName: string) {
-    const type = this.schema.getType(typeName);
+  private getType(typeName: string | GraphQLNamedType) {
+    const type = this.schema.getType(
+      typeof typeName === 'string' ? typeName : typeName.name,
+    );
 
     if (!type) {
       throw new Error(`${typeName} does not exist on schema`);
@@ -295,7 +299,8 @@ class Mocks {
       //   stored[key] = [...value];
       // } else {
       // TODO nesting
-      const fieldType = this.getType(field.type as any);
+
+      const fieldType = this.getType(getNamedType(field.type));
 
       if (isObjectType(fieldType) && typeof value === 'string') {
         typeSpec.fks[fieldType.name] = key;
@@ -471,10 +476,14 @@ class Mocks {
       return defaultResolvedValue;
     }
 
+    // we want to avoid the rootType path if
+    // we've already run through it to avoid an infinite loop
+    const hasResolved = info.fieldName in source;
+
     // root fields don't have a resolver we can intercept.
     // in order to mock those fields we run the root mocks here
     // in the child fields and update property
-    if (isRootType(info.parentType, this.schema)) {
+    if (!hasResolved && isRootType(info.parentType, this.schema)) {
       const rootMock = this.mocks[info.parentType.name] as any;
 
       if (rootMock) {
