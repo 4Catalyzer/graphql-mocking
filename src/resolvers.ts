@@ -1,4 +1,5 @@
 import { GraphQLResolveInfo, getNullableType, isListType } from 'graphql';
+import { Connection } from 'graphql-relay';
 import { connectionFromArray } from 'graphql-relay/connection/arrayConnection';
 
 import type { MockFieldResolver } from '.';
@@ -253,7 +254,23 @@ export function connection({
 
     if (filter) nodes = nodes.filter(filter);
 
-    return connectionFromArray(nodes, args);
+    const conn = connectionFromArray(nodes, args) as Connection<Item> & {
+      nodes?: Item[];
+      totalCount?: number;
+    };
+    const fields = connType.getFields();
+
+    if (fields.nodes) {
+      conn.nodes = conn.edges.map((e) => e.node);
+    }
+    if (fields.totalCount) {
+      conn.totalCount = nodes.length;
+    }
+    if (!fields.edges) {
+      delete (conn as any).edges;
+    }
+
+    return conn;
   };
 }
 

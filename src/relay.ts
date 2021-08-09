@@ -10,11 +10,23 @@ import {
   isObjectType,
   isScalarType,
 } from 'graphql';
-import { fromGlobalId, toGlobalId } from 'graphql-relay';
+import {
+  connectionFromArray,
+  connectionFromArraySlice,
+  fromGlobalId,
+  toGlobalId,
+} from 'graphql-relay';
 
 import type { MockFieldResolver, MockGraphQLFieldResolver } from '.';
 import { uuid } from './mocks';
 import { getNullableNamedType } from './utils';
+
+export {
+  toGlobalId,
+  fromGlobalId,
+  connectionFromArray,
+  connectionFromArraySlice,
+};
 
 function isNodeInterface(intf: GraphQLInterfaceType) {
   if (intf.name !== 'Node') return false;
@@ -52,21 +64,29 @@ export function implementsNode(v: GraphQLType) {
 export function isConnectionType(v: GraphQLType): v is GraphQLObjectType {
   if (!isObjectType(v)) return false;
 
-  const { edges, pageInfo } = v.getFields();
+  const { edges, nodes, pageInfo } = v.getFields();
+
   return (
-    isListType(getNullableType(edges?.type)) &&
-    isObjectType(getNullableType(pageInfo?.type))
+    pageInfo &&
+    (edges || nodes) &&
+    isListType(getNullableType(edges ? edges.type : nodes.type)) &&
+    isObjectType(getNullableType(pageInfo.type))
   );
 }
 
 export function getConnectionNodeType(
   connection: GraphQLObjectType,
 ): GraphQLObjectType {
-  const { edges } = connection.getFields();
+  const { edges, nodes } = connection.getFields();
 
-  const edgeType = getNullableNamedType(edges!.type) as GraphQLObjectType;
-  return getNullableNamedType(
-    edgeType.getFields().node!.type,
+  const nodeOrEdgeType = getNamedType(
+    (edges || nodes)!.type,
+  ) as GraphQLObjectType;
+
+  if (!edges) return nodeOrEdgeType;
+
+  return getNamedType(
+    nodeOrEdgeType.getFields().node!.type,
   ) as GraphQLObjectType;
 }
 
@@ -83,8 +103,15 @@ export const globalIdMock: MockGraphQLFieldResolver = (
   ctx,
   info,
 ) => {
-  const id = ctx.mocks.getId(src) || uuid(src, args, ctx, info);
   const parent = getNullableNamedType(info.parentType);
+  let id = ctx.mocks.getId(src);
+
+  // always treat mock ids as global so we can reverse them
+  if (id) {
+    return toGlobalId(parent.name, id);
+  }
+
+  id = uuid(src, args, ctx, info);
   return implementsNode(parent) ? toGlobalId(parent.name, id) : id;
 };
 
