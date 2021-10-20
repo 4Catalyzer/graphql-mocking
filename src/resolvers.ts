@@ -141,19 +141,23 @@ export function related({
 
     const otherType = getNullableNamedType(info.returnType);
 
+    const find = (value: any, fk: string) => {
+      return Array.isArray(value)
+        ? value.find((v) => valueOrRefId(v) === fk)
+        : valueOrRefId(value) === fk;
+    };
+
     return isListType(getNullableType(info.returnType))
       ? mocks
           .getAll(otherType.name)
           .filter(
             (i: any) =>
-              valueOrRefId(i[relatedFieldName]) === id &&
-              (!filter || filter(i, args)),
+              find(i[relatedFieldName], id) && (!filter || filter(i, args)),
           )
       : mocks.find(
           otherType.name,
           (i: any) =>
-            valueOrRefId(i[relatedFieldName]) === id &&
-            (!filter || filter(i, args)),
+            find(i[relatedFieldName], id) && (!filter || filter(i, args)),
         );
   };
 }

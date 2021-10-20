@@ -61,7 +61,9 @@ export function implementsNode(v: GraphQLType) {
   return interfaces.some(isNodeInterface);
 }
 
-export function isConnectionType(v: GraphQLType): v is GraphQLObjectType {
+export function isConnectionType(
+  v: GraphQLType,
+): v is GraphQLObjectType & { EdgeType: GraphQLObjectType } {
   if (!isObjectType(v)) return false;
 
   const { edges, nodes, pageInfo } = v.getFields();

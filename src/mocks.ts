@@ -28,3 +28,10 @@ export const int = createFakerResolver((faker) =>
 );
 
 export const bool = createFakerResolver((faker) => faker.datatype.boolean());
+
+export const datetime = createFakerResolver((faker) =>
+  faker.datatype.datetime().toISOString(),
+);
+export const date = createFakerResolver(
+  (faker) => faker.datatype.datetime().toISOString().split('T')[0],
+);

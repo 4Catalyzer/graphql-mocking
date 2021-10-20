@@ -82,17 +82,34 @@ export type MockGraphQLFieldResolver<
   info: MockGraphQLResolveInfo,
 ) => MockField | ResolvedValue;
 
-export { isRef };
+export { isRef, connection, related };
 
-const getFaker = (info: GraphQLResolveInfo, obj: Item, mocks: any) => {
+const getFaker = (
+  info: GraphQLResolveInfo,
+  obj: Item,
+  mocks: any,
+  cache: Map<string, Faker>,
+) => {
   const namedType = getNullableNamedType(info.parentType);
   return seedFaker(
     `${namedType.name}.${info.fieldName}:${mocks.getId(obj) || obj.id || ''}`,
+    cache,
   );
 };
 
-const takeRandom = <T>(arr: readonly T[]) =>
-  arr[Math.floor(Math.random() * arr.length)];
+const removeRandom = <T>(arr: T[], faker: Faker) => {
+  const idx = Math.floor(
+    faker.datatype.number({ max: arr.length - 1, min: 0 }),
+  );
+  return arr.splice(idx, 1)[0];
+};
+
+const takeRandom = <T>(arr: readonly T[], faker: Faker) => {
+  const idx = Math.floor(
+    faker.datatype.number({ max: arr.length - 1, min: 0 }),
+  );
+  return arr[idx];
+};
 
 type ResolverArgs = [
   source: any,
@@ -108,11 +125,24 @@ interface TypeSpec {
 class Mocks {
   idField: string;
 
+  private schema: GraphQLSchema;
+
+  readonly listLength: number;
+
   constructor(
-    private schema: GraphQLSchema,
+    schemaOrSdl: GraphQLSchema | string,
     { idField }: { idField?: string } = {},
   ) {
+    this.schema =
+      typeof schemaOrSdl === 'string'
+        ? // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+          require('@graphql-tools/schema').makeExecutableSchema({
+            typeDefs: schemaOrSdl,
+          })
+        : schemaOrSdl;
+
     this.idField = idField ?? 'id';
+    this.listLength = 2;
 
     this.mocks = {
       Int: BaseMocks.int,
@@ -122,7 +152,7 @@ class Mocks {
       ID: globalIdMock,
     };
 
-    if (hasNodeInterface(schema)) {
+    if (hasNodeInterface(this.schema)) {
       this.mock('Node', nodeMock);
     }
   }
@@ -132,6 +162,8 @@ class Mocks {
   private mocks: MockTypeMap;
 
   private items = new Map<string, Item>();
+
+  private fakerCache = new Map<string, Faker>();
 
   private store = new Map<string, Map<string, Item>>();
 
@@ -251,11 +283,16 @@ class Mocks {
     return this.getAll(typeName).find(cb);
   }
 
-  addMany(typeName: string, items: Record<string, unknown | Ref>[]) {
-    return items.map((item) => this.add(typeName, item));
+  protected sample(typeName: string, faker: Faker) {
+    const results = this.getAll(typeName);
+    return results.length ? faker.random.arrayElement(results) : undefined;
   }
 
-  add(typeName: string, item: Record<string, unknown | Ref>) {
+  addExamples(typeName: string, items: Record<string, unknown | Ref>[]) {
+    return items.map((item) => this.addExample(typeName, item));
+  }
+
+  addExample(typeName: string, item: Record<string, unknown | Ref>) {
     const type = this.getObjectType(typeName);
 
     let id = this.getId(item);
@@ -301,10 +338,17 @@ class Mocks {
       // TODO nesting
 
       const fieldType = this.getType(getNamedType(field.type));
+      const isArrayOfStrings =
+        Array.isArray(value) && typeof value[0] === 'string';
 
       if (isObjectType(fieldType) && typeof value === 'string') {
         typeSpec.fks[fieldType.name] = key;
         stored[key] = this.ref(fieldType.name, value);
+      } else if (isListType(field.type) && isArrayOfStrings) {
+        typeSpec.fks[fieldType.name] = key;
+        stored[key] = (value as string[]).map((v) =>
+          this.ref(fieldType.name, v),
+        );
       } else {
         stored[key] = value;
       }
@@ -333,9 +377,28 @@ class Mocks {
     return { $$ref: { type: typeName, id } };
   }
 
-  mockFromType(fieldType: GraphQLOutputType, args: ResolverArgs): unknown {
+  mockFromType(
+    fieldType: GraphQLOutputType,
+    args: ResolverArgs,
+    sample = true,
+  ): unknown {
+    const { faker } = args[3];
     const parentType = getNullableNamedType(args[3].parentType);
     const nullableType = getNullableType(fieldType);
+
+    const generateList = (type: GraphQLOutputType) => {
+      const list = new Array(this.listLength);
+      const named = getNullableNamedType(type);
+      const results = named ? this.getAll(named.name) : [];
+
+      for (let idx = 0; idx < list.length; idx++) {
+        list[idx] = results.length
+          ? removeRandom(results, faker)
+          : this.mockFromType(type, args, false);
+      }
+
+      return list;
+    };
 
     if (isListType(nullableType)) {
       const listType = getNullableNamedType(nullableType.ofType);
@@ -347,9 +410,7 @@ class Mocks {
         }).apply(source, rest);
       }
 
-      return Array.from({ length: 2 }, () =>
-        this.mockFromType(nullableType.ofType, args),
-      );
+      return generateList(nullableType.ofType);
     }
 
     if (isConnectionType(nullableType)) {
@@ -363,10 +424,7 @@ class Mocks {
         }).apply(source, rest);
       }
 
-      return connectionFromArray(
-        Array.from({ length: 2 }, () => this.mockFromType(nodeType, args)),
-        args[1],
-      );
+      return connectionFromArray(generateList(nodeType), args[1]);
     }
 
     const mockFn = this.mocks[nullableType.name];
@@ -401,6 +459,7 @@ class Mocks {
       } else {
         implementationType = takeRandom(
           this.schema.getPossibleTypes(nullableType),
+          faker,
         );
       }
 
@@ -417,10 +476,23 @@ class Mocks {
 
     if (isEnumType(nullableType)) {
       const values = nullableType.getValues().map((v) => v.value);
-      return takeRandom(values);
+      return takeRandom(values, faker);
     }
+
     if (isObjectType(nullableType)) {
-      return {};
+      const fk = this.getRelatedKey(nullableType.name, parentType.name);
+
+      if (fk) {
+        const [source, ...rest] = args;
+        return related({
+          relatedFieldName: fk,
+        }).apply(source, rest);
+      }
+
+      if (!sample) return {};
+
+      const results = this.getAll(nullableType.name);
+      return takeRandom(results, faker) || {};
     }
 
     throw new Error(`${nullableType} not implemented`);
@@ -437,7 +509,7 @@ class Mocks {
     }
 
     context.mocks ||= this;
-    info.faker = getFaker(info, source, this);
+    info.faker = getFaker(info, source, this, this.fakerCache);
 
     const fieldType = getNullableType(info.returnType);
 
@@ -457,22 +529,23 @@ class Mocks {
 
       // in the case of an object type, we want to merge in any additional mocks
       // TODO: we should store the results of this so it's consistent
-      if (isObjectType(namedType) && this.mocks[namedType.name]) {
-        const mockFn = this.mocks[namedType.name]!;
+      if (isObjectType(namedType)) {
+        if (this.mocks[namedType.name]) {
+          const mockFn = this.mocks[namedType.name]!;
 
-        if (Array.isArray(defaultResolvedValue)) {
-          return defaultResolvedValue.map((item: any) => ({
-            ...(mockFn(item, args, context, info) as any),
-            ...item,
-          }));
+          if (Array.isArray(defaultResolvedValue)) {
+            return defaultResolvedValue.map((item: any) => ({
+              ...(mockFn(item, args, context, info) as any),
+              ...item,
+            }));
+          }
+
+          return {
+            ...(mockFn(source, args, context, info) as any),
+            ...defaultResolvedValue,
+          };
         }
-
-        return {
-          ...(mockFn(source, args, context, info) as any),
-          ...defaultResolvedValue,
-        };
       }
-
       return defaultResolvedValue;
     }
 

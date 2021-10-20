@@ -11,13 +11,12 @@ import {
   isListType,
   isNonNullType,
   isObjectType,
+  isScalarType,
 } from 'graphql';
 
 faker.seed(9000);
 
 export type Faker = typeof faker;
-
-const fakerCache = new Map<string, Faker>();
 
 function hash(str: string) {
   /* eslint-disable */
@@ -28,14 +27,14 @@ function hash(str: string) {
   /* eslint-enable */
 }
 
-export function seedFaker(str: string): Faker {
-  let f = fakerCache.get(str);
+export function seedFaker(str: string, cache: Map<string, Faker>): Faker {
+  let f = cache.get(str);
 
   if (!f) {
     // eslint-disable-next-line global-require
     f = new Faker({ locales: require('faker/lib/locales') });
     f!.seed(hash(str));
-    fakerCache.set(str, f!);
+    cache.set(str, f!);
   }
   return f!;
 }
@@ -78,4 +77,10 @@ export function isRootType(type: GraphQLObjectType, schema: GraphQLSchema) {
     subscriptionType != null && subscriptionType.name === type.name;
 
   return isOnQueryType || isOnMutationType || isOnSubscriptionType;
+}
+
+export function hasScalar(typeName: string, schema: GraphQLSchema) {
+  const type = schema.getType(typeName);
+
+  return type && isScalarType(type) ? type : false;
 }

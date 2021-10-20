@@ -1,9 +1,9 @@
-import { GraphQLSchema, graphql } from 'graphql';
-import Mocks, { MockTypeMap } from '../src';
-
 import fs from 'fs';
-import { makeExecutableSchema } from '@graphql-tools/schema';
+
+import { GraphQLSchema, graphql } from 'graphql';
 import { toGlobalId } from 'graphql-relay';
+
+import Mocks, { MockTypeMap } from '../src';
 import { connection, itemById, name, related } from '../src/resolvers';
 
 const typeDefs = fs.readFileSync(`${__dirname}/swapi.graphql`, 'utf-8');
@@ -14,7 +14,6 @@ const gql = (template: TemplateStringsArray, ...substitutions: any[]) =>
 const staticMocks: MockTypeMap = {};
 
 describe('mock schema', () => {
-  let schema: GraphQLSchema;
   let mocks: Mocks;
 
   async function run(s: GraphQLSchema, query: string, variables?: any) {
@@ -26,7 +25,7 @@ describe('mock schema', () => {
   }
 
   function getStore() {
-    const store = new Mocks(schema);
+    const store = new Mocks(typeDefs);
 
     store.mock(staticMocks);
 
@@ -34,7 +33,6 @@ describe('mock schema', () => {
   }
 
   beforeEach(() => {
-    schema = makeExecutableSchema({ typeDefs });
     mocks = getStore();
   });
 
@@ -74,6 +72,162 @@ Object {
   },
 }
 `);
+  });
+
+  it('should resolve with args', async () => {
+    const data = await run(
+      mocks.mockedSchema,
+      gql`
+        query {
+          person(id: 1) {
+            name
+          }
+        }
+      `,
+    );
+
+    expect({ data }).toMatchInlineSnapshot(`
+  Object {
+    "data": Object {
+      "person": Object {
+        "name": "matrix",
+      },
+    },
+  }
+  `);
+  });
+
+  describe('sampling', () => {
+    it('should use existing data', async () => {
+      mocks.addExamples('Person', [
+        { $id: 'p1', name: 'Luke Skywalker' },
+        { $id: 'p2', name: 'Leia Skywalker' },
+        { $id: 'p3', name: 'Han Solo' },
+      ]);
+
+      mocks.addExamples('Film', [
+        { $id: 'f1', title: 'A New Hope', episodeID: 4 },
+        { $id: 'f2', title: 'The Empire Strikes Back', episodeID: 5 },
+      ]);
+
+      const data = await run(
+        mocks.mockedSchema,
+        gql`
+          query {
+            allFilms {
+              films {
+                id
+                title
+                episodeID
+                characters {
+                  name
+                }
+              }
+            }
+          }
+        `,
+      );
+
+      expect({ data }).toMatchInlineSnapshot(`
+Object {
+  "data": Object {
+    "allFilms": Object {
+      "films": Array [
+        Object {
+          "characters": Array [
+            Object {
+              "name": "Leia Skywalker",
+            },
+            Object {
+              "name": "Luke Skywalker",
+            },
+          ],
+          "episodeID": 5,
+          "id": "RmlsbTpmMg==",
+          "title": "The Empire Strikes Back",
+        },
+        Object {
+          "characters": Array [
+            Object {
+              "name": "Han Solo",
+            },
+            Object {
+              "name": "Leia Skywalker",
+            },
+          ],
+          "episodeID": 4,
+          "id": "RmlsbTpmMQ==",
+          "title": "A New Hope",
+        },
+      ],
+    },
+  },
+}
+`);
+    });
+
+    it('should not repeat list data', async () => {
+      mocks.addExamples('Person', [{ $id: 'p1', name: 'Luke Skywalker' }]);
+
+      mocks.addExamples('Film', [
+        { $id: 'f1', title: 'A New Hope', episodeID: 4 },
+      ]);
+
+      const data = await run(
+        mocks.mockedSchema,
+        gql`
+          query {
+            allFilms {
+              films {
+                id
+                title
+                episodeID
+                characters {
+                  name
+                }
+              }
+            }
+          }
+        `,
+      );
+
+      expect({ data }).toMatchInlineSnapshot(`
+Object {
+  "data": Object {
+    "allFilms": Object {
+      "films": Array [
+        Object {
+          "characters": Array [
+            Object {
+              "name": "Luke Skywalker",
+            },
+            Object {
+              "name": "matrix",
+            },
+          ],
+          "episodeID": 4,
+          "id": "RmlsbTpmMQ==",
+          "title": "A New Hope",
+        },
+        Object {
+          "characters": Array [
+            Object {
+              "name": "Luke Skywalker",
+            },
+            Object {
+              "name": "Designer",
+            },
+          ],
+          "episodeID": 28,
+          "id": "RmlsbTo1OGZhNjQ3ZS05YTE5LTRmZWUtYWRkYi1mYjg0OWNjZjNmMmQ=",
+          "title": "initiative",
+        },
+      ],
+    },
+  },
+}
+`);
+    });
   });
 
   it('should handle global id mocks', async () => {
@@ -145,7 +299,7 @@ Object {
       }),
     });
 
-    mocks.add('Person', {
+    mocks.addExample('Person', {
       $id: 'p1',
       $name: 'secret name',
     });
@@ -192,7 +346,7 @@ Object {
   "edges": Array [
     Object {
       "node": Object {
-        "name": "Nora Howell DVM",
+        "name": "Crystal Ziemann",
       },
     },
   ],
@@ -214,7 +368,7 @@ Object {
       director: name,
     }));
 
-    mocks.addMany('Film', [
+    mocks.addExamples('Film', [
       {
         $id: '1',
         title: 'A new Hope',
@@ -262,7 +416,7 @@ Array [
   });
 
   it('should default mock node()', async () => {
-    mocks.addMany('Film', [
+    mocks.addExamples('Film', [
       {
         $id: '1',
         title: 'A new Hope',
@@ -312,12 +466,12 @@ Object {
     `;
 
     it('should find related items when configured', async () => {
-      mocks.add('Species', {
+      mocks.addExample('Species', {
         $id: 's1',
         name: 'Human',
       });
 
-      mocks.addMany('Person', [
+      mocks.addExamples('Person', [
         {
           $id: 'p1',
 
@@ -362,12 +516,12 @@ Object {
     });
 
     it('should resolve connections ', async () => {
-      mocks.add('Species', {
+      mocks.addExample('Species', {
         $id: 's1',
         name: 'Human',
       });
 
-      mocks.addMany('Person', [
+      mocks.addExamples('Person', [
         {
           $id: 'p1',
 
@@ -427,12 +581,12 @@ Object {
         species: itemById(),
       }));
 
-      mocks.add('Species', {
+      mocks.addExample('Species', {
         $id: 's1',
         name: 'Human',
       });
 
-      mocks.addMany('Person', [
+      mocks.addExamples('Person', [
         {
           $id: 'p1',
 
@@ -458,13 +612,91 @@ Object {
       });
     });
 
-    it('should automatically link connections', async () => {
-      mocks.add('Species', {
+    it('should automatically link parent -> child', async () => {
+      mocks.mock('Root', () => ({
+        species: itemById(),
+      }));
+
+      mocks.addExamples('Species', [
+        {
+          $id: 's1',
+          name: 'Human',
+          people: ['p1', 'p2'],
+        },
+        {
+          $id: 's2',
+          name: 'Hutt',
+          people: ['p3'],
+        },
+      ]);
+
+      mocks.addExamples('Person', [
+        {
+          $id: 'p1',
+          name: 'Luke Skywalker',
+        },
+        {
+          $id: 'p2',
+          name: 'Leia Skywalker',
+        },
+        {
+          $id: 'p3',
+          name: 'Jabba',
+        },
+      ]);
+
+      const data = await run(mocks.mockedSchema, speciesQuery);
+
+      expect(data.species).toEqual({
+        name: 'Human',
+        people: [
+          { name: 'Luke Skywalker', species: { name: 'Human' } },
+          { name: 'Leia Skywalker', species: { name: 'Human' } },
+        ],
+      });
+    });
+
+    it('should automatically link explicit FKs', async () => {
+      mocks.mock('Root', () => ({
+        species: itemById(),
+      }));
+
+      mocks.addExample('Species', {
         $id: 's1',
         name: 'Human',
       });
 
-      mocks.addMany('Person', [
+      mocks.addExamples('Person', [
+        {
+          $id: 'p1',
+          $speciesId: 's1',
+          name: 'Luke Skywalker',
+        },
+        {
+          $id: 'p2',
+          $speciesId: 's1',
+          name: 'Leia Skywalker',
+        },
+      ]);
+
+      const data = await run(mocks.mockedSchema, speciesQuery);
+
+      expect(data.species).toEqual({
+        name: 'Human',
+        people: [
+          { name: 'Luke Skywalker', species: { name: 'Human' } },
+          { name: 'Leia Skywalker', species: { name: 'Human' } },
+        ],
+      });
+    });
+
+    it('should automatically link connections', async () => {
+      mocks.addExample('Species', {
+        $id: 's1',
+        name: 'Human',
+      });
+
+      mocks.addExamples('Person', [
         {
           $id: 'p1',
 
@@ -515,13 +747,68 @@ Object {
       });
     });
 
-    it('should automatically paginate connections', async () => {
-      mocks.add('Species', {
+    it('should automatically link using explicit FK', async () => {
+      mocks.addExample('Species', {
         $id: 's1',
         name: 'Human',
       });
 
-      mocks.addMany('Person', [
+      mocks.addExamples('Person', [
+        {
+          $id: 'p1',
+          $speciesId: 's1',
+          name: 'Luke Skywalker',
+        },
+        {
+          $id: 'p2',
+          $speciesId: 's1',
+          name: 'Leia Skywalker',
+        },
+      ]);
+
+      const data = await run(
+        mocks.mockedSchema,
+        gql`
+          query {
+            node(id: "${toGlobalId('Species', 's1')}") {
+              ... on Species {
+                name
+                personConnection {
+                  edges {
+                    node {
+                      name
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                  }
+                }
+              }
+            }
+          }
+        `,
+      );
+      expect(data.node).toEqual({
+        name: 'Human',
+        personConnection: {
+          edges: [
+            { node: { name: 'Luke Skywalker' } },
+            { node: { name: 'Leia Skywalker' } },
+          ],
+          pageInfo: {
+            hasNextPage: false,
+          },
+        },
+      });
+    });
+
+    it('should automatically paginate connections', async () => {
+      mocks.addExample('Species', {
+        $id: 's1',
+        name: 'Human',
+      });
+
+      mocks.addExamples('Person', [
         {
           $id: 'p1',
 
