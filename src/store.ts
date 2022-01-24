@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/ban-types */
+
 import {
   GraphQLInterfaceType,
   GraphQLNamedType,
@@ -6,10 +7,10 @@ import {
   GraphQLOutputType,
   GraphQLResolveInfo,
   GraphQLSchema,
-  defaultFieldResolver,
   getNamedType,
   getNullableType,
   isAbstractType,
+  isCompositeType,
   isEnumType,
   isInterfaceType,
   isListType,
@@ -28,7 +29,6 @@ import {
   globalIdMock,
   hasNodeInterface,
   isConnectionType,
-  nodeMock,
 } from './relay';
 import { connection, related } from './resolvers';
 import {
@@ -41,7 +41,8 @@ import {
   seedFaker,
 } from './utils';
 
-export type MockTypeMap = Record<string, MockGraphQLFieldResolver | undefined>;
+export type MockFn = (generator: Faker) => any | undefined;
+export type MockTypeMap = Record<string, MockFn>;
 
 export type AnyObject = Record<PropertyKey, any>;
 
@@ -85,19 +86,6 @@ export type MockGraphQLFieldResolver<
 
 export { isRef, connection, related };
 
-const getFaker = (
-  info: GraphQLResolveInfo,
-  obj: Item,
-  mocks: any,
-  cache: Map<string, Faker>,
-) => {
-  const namedType = getNullableNamedType(info.parentType);
-  return seedFaker(
-    `${namedType.name}.${info.fieldName}:${mocks.getId(obj) || obj.id || ''}`,
-    cache,
-  );
-};
-
 const removeRandom = <T>(arr: T[], faker: Faker) => {
   const idx = Math.floor(
     faker.datatype.number({ max: arr.length - 1, min: 0 }),
@@ -112,13 +100,6 @@ const takeRandom = <T>(arr: readonly T[], faker: Faker) => {
   return arr[idx];
 };
 
-type ResolverArgs = [
-  source: any,
-  args: any,
-  context: any,
-  info: MockGraphQLResolveInfo,
-];
-
 interface TypeSpec {
   fks: Record<string, string>;
 }
@@ -126,9 +107,11 @@ interface TypeSpec {
 class Mocks {
   idField: string;
 
-  private schema: GraphQLSchema;
+  readonly schema: GraphQLSchema;
 
   readonly listLength: number;
+
+  readonly mocked = new Set<string>();
 
   constructor(
     schemaOrSdl: GraphQLSchema | string,
@@ -153,9 +136,9 @@ class Mocks {
       ID: globalIdMock,
     };
 
-    if (hasNodeInterface(this.schema)) {
-      this.mock('Node', nodeMock);
-    }
+    // if (hasNodeInterface(this.schema)) {
+    //   this.mock('Node', nodeMock);
+    // }
   }
 
   private ids = new Map<string, number>();
@@ -239,42 +222,46 @@ class Mocks {
     return `${typeName}:${i}`;
   }
 
-  mock(mocks: MockTypeMap): this;
+  get(ref: Ref, fieldName?: string): Item | null;
 
-  mock(typeName: string, mocks: MockGraphQLFieldResolver): this;
+  get(typeName: string, id: string, fieldName?: string): Item | null;
 
-  mock(
-    mocksOrTypeName: string | MockTypeMap,
-    maybeMocks?: MockGraphQLFieldResolver,
-  ): this {
-    if (typeof mocksOrTypeName === 'string') {
-      this.getType(mocksOrTypeName);
-      this.mocks[mocksOrTypeName] = maybeMocks!;
-    } else {
-      for (const [typeName, mock] of Object.entries(mocksOrTypeName)) {
-        this.getType(typeName);
-        this.mocks[typeName] = mock;
-      }
-    }
-
-    return this;
-  }
-
-  get(ref: Ref): Item | null;
-
-  get(typeName: string, id: string): Item | null;
-
-  get(t: string | Ref, id?: string) {
+  get(typeOrRef: string | Ref, id?: string, fieldName?: string) {
     const globalId = id && getIdInfo(id);
     if (globalId) {
-      t = globalId.type;
+      typeOrRef = globalId.type;
       id = globalId.id;
     }
-    return (
-      (isRef(t)
-        ? this.store.get(t.$$ref.type)?.get(t.$$ref.id)
-        : this.store.get(t)?.get(id!)) ?? null
-    );
+    let typeName: string;
+
+    if (isRef(typeOrRef)) {
+      typeName = typeOrRef.$$ref.type;
+      id = typeOrRef.$$ref.id;
+      fieldName = id;
+    } else {
+      typeName = typeOrRef;
+    }
+
+    return this.generateTypeFromMocks(typeName, id, fieldName);
+  }
+
+  set(opts: any) {
+    const existing = this.store.get(opts.typeName)?.get(opts.id);
+    const value: Item = opts.fieldName
+      ? { [opts.fieldName]: opts.value }
+      : opts.value;
+
+    if (existing) {
+      for (const [field, fieldValue] of Object.entries(value)) {
+        if (opts.override === false && existing[field] !== undefined) {
+          continue;
+        }
+        existing[field] = fieldValue;
+      }
+    } else {
+      value.$id = opts.id;
+      this.addExample(opts.typeName, value);
+    }
   }
 
   getAll(typeName: string) {
@@ -286,8 +273,13 @@ class Mocks {
     return this.getAll(typeName).find(cb) ?? null;
   }
 
+  getFaker(typeName: string) {
+    return seedFaker(typeName, this.fakerCache);
+  }
+
   protected stubIfNeeded(typeName: string, id: string) {
     const ref = this.ref(typeName, id);
+
     if (!this.get(typeName, id)) {
       this.addExample(typeName, { $id: id });
     }
@@ -302,11 +294,23 @@ class Mocks {
   define(
     typeName: string,
     spec: {
-      mock: MockGraphQLFieldResolver;
+      resolver?: MockFieldResolver;
+      generators?: MockFn;
       examples: Record<string, unknown | Ref>[];
     },
   ) {
-    return this.mock(typeName, spec.mock).addExamples(typeName, spec.examples);
+    if (spec.generators) {
+      this.mock(typeName, spec.generators);
+    }
+
+    return this.addExamples(typeName, spec.examples);
+  }
+
+  private mock(typeName: string, mocks: MockFn) {
+    const faker = this.getFaker(typeName);
+    this.mocks[typeName] = () => mocks(faker);
+
+    return this;
   }
 
   addExamples(typeName: string, items: Record<string, unknown | Ref>[]) {
@@ -314,10 +318,10 @@ class Mocks {
   }
 
   addExample(typeName: string, item: Record<string, unknown | Ref>) {
-    let type = this.getType(typeName);
+    const _type = this.getType(typeName);
 
-    type = this.getObjectType(
-      isUnionType(type) ? (item.__typename as string) : typeName,
+    const type = this.getObjectType(
+      isUnionType(_type) ? (item.__typename as string) : typeName,
     );
 
     let id = this.getId(item);
@@ -328,6 +332,8 @@ class Mocks {
     }
 
     const typeSpec = this.typeSpecs.get(typeName) || { fks: {} };
+    const fields = type.getFields();
+    const providedKeys = new Set();
 
     for (const [key, value] of Object.entries(item)) {
       if (this.isAbstractField(key)) {
@@ -341,26 +347,13 @@ class Mocks {
         continue;
       }
 
-      const field = this.getField(type, key);
+      const field = fields[key];
 
-      // if (isRef(value)) {
-      //   if (!isRefableType(field.type)) {
-      //     throw new Error(
-      //       `field ${key} on type ${typeName} cannot be assigned to a Ref, only object of interfaces can be referenced`,
-      //     );
-      //   }
-      //   stored[key] = value;
-      // }
-      // if (Array.isArray(value)) {
-      //   if (isRef(value[0]) && !isRefableType(field.type)) {
-      //     throw new Error(
-      //       `field ${key} on type ${typeName} cannot be assigned to a Ref, only object of interfaces can be referenced`,
-      //     );
-      //   }
-
-      //   stored[key] = [...value];
-      // } else {
-      // TODO nesting
+      if (!field) {
+        throw new Error(`${key} does not exist on type ${type.name}`);
+      } else {
+        providedKeys.add(key);
+      }
 
       const fieldType = this.getType(getNamedType(field.type));
       const isArrayOfStrings =
@@ -369,7 +362,11 @@ class Mocks {
       if (isObjectType(fieldType) && typeof value === 'string') {
         typeSpec.fks[fieldType.name] = key;
         stored[key] = this.stubIfNeeded(fieldType.name, value);
-      } else if (isListType(field.type) && isArrayOfStrings) {
+      } else if (
+        isListType(field.type) &&
+        isCompositeType(field.type.ofType) &&
+        isArrayOfStrings
+      ) {
         typeSpec.fks[fieldType.name] = key;
         stored[key] = (value as string[]).map((v) =>
           this.stubIfNeeded(fieldType.name, v),
@@ -389,7 +386,7 @@ class Mocks {
     }
     typeData.set(id, stored);
 
-    return this.ref(typeName, id);
+    // return this.mockStore.insert(typeName, { ...stored, _id: id }, true);
   }
 
   getRelatedKey(typeNameA: string, typeNameB: string) {
@@ -402,60 +399,119 @@ class Mocks {
     return { $$ref: { type: typeName, id } };
   }
 
-  mockFromType(
+  generateTypeFromMocks(
+    typeName: string,
+    id: string = this.id(typeName),
+    fieldName?: string,
+  ) {
+    const key = `${typeName}:${id}`;
+    const existing = this.store.get(typeName)?.get(id);
+
+    const type = this.getObjectType(typeName);
+
+    if (existing && this.mocked.has(key)) {
+      if (fieldName) {
+        if (existing[fieldName] === undefined) {
+          existing[fieldName] = this.generateValueFromType(
+            type.getFields()[fieldName].type,
+            type,
+          );
+        }
+        return existing[fieldName];
+      }
+
+      return existing;
+    }
+
+    const mock = this.mocks[typeName];
+    const faker = this.getFaker(typeName);
+
+    let mockValue;
+    if (mock) {
+      if (typeof mock === 'function') {
+        mockValue = mock(faker);
+      } else {
+        mockValue = mock;
+      }
+    }
+
+    const result: Record<string, any> = {};
+
+    if (mockValue) {
+      for (const field of Object.keys(mockValue)) {
+        if (!this.isAbstractField(field) && !this.isField(typeName, field)) {
+          throw new TypeError(
+            `Generator for type "${typeName}" has an invalid field: "${field}" configured. Generators can only be valid fields of the GraphQL type`,
+          );
+        }
+
+        const fieldMock =
+          typeof mockValue[field] === 'function'
+            ? mockValue[field]()
+            : mockValue[field];
+
+        if (fieldMock !== undefined) {
+          result[field] = fieldMock;
+        }
+      }
+    }
+
+    if (fieldName && result[fieldName] === undefined) {
+      result[fieldName] = this.generateValueFromType(
+        type.getFields()[fieldName].type,
+        type,
+      );
+    }
+
+    if (existing) {
+      this.set({ typeName, id, value: result, override: false });
+    } else {
+      this.addExample(
+        typeName,
+        this.getId(result) ? result : { $id: id, ...result },
+      );
+    }
+
+    this.mocked.add(key);
+
+    return fieldName ? result[fieldName] : this.get(typeName, id)!;
+  }
+
+  generateValueFromType(
     fieldType: GraphQLOutputType,
-    args: ResolverArgs,
+    parentType?: GraphQLNamedType,
     sample = true,
   ): unknown {
-    const { faker } = args[3];
-    const parentType = getNullableNamedType(args[3].parentType);
     const nullableType = getNullableType(fieldType);
+    const faker = seedFaker(getNamedType(fieldType).name, this.fakerCache);
 
     const generateList = (type: GraphQLOutputType) => {
       const list = new Array(this.listLength);
-      const named = getNullableNamedType(type);
-      const results = named ? this.getAll(named.name) : [];
+      const results = isCompositeType(type) ? this.getAll(type.name) : [];
 
       for (let idx = 0; idx < list.length; idx++) {
         list[idx] = results.length
           ? removeRandom(results, faker)
-          : this.mockFromType(type, args, false);
+          : this.generateValueFromType(type, getNamedType(fieldType), false);
       }
 
       return list;
     };
 
     if (isListType(nullableType)) {
-      const listType = getNullableNamedType(nullableType.ofType);
-      const fk = this.getRelatedKey(listType.name, parentType.name);
-      if (fk) {
-        const [source, ...rest] = args;
-        return related({
-          relatedFieldName: fk,
-        }).apply(source, rest);
-      }
-
       return generateList(nullableType.ofType);
     }
 
     if (isConnectionType(nullableType)) {
       const nodeType = getConnectionNodeType(nullableType);
-      const fk = this.getRelatedKey(nodeType.name, parentType.name);
 
-      if (fk) {
-        const [source, ...rest] = args;
-        return connection({
-          relatedFieldName: fk,
-        }).apply(source, rest);
-      }
-
-      return connectionFromArray(generateList(nodeType), args[1]);
+      return connectionFromArray(generateList(nodeType), { first: 100 });
     }
 
     const mockFn = this.mocks[nullableType.name];
 
     const resolveMock = () => {
-      const result = mockFn!(...args);
+      const result = mockFn!(faker);
 
       return isRef(result) ? this.get(result) : result;
     };
@@ -491,7 +547,7 @@ class Mocks {
       return {
         __typename: implementationType.name,
         ...interfaceMockObj,
-        ...(this.mockFromType(implementationType, args) as any),
+        ...(this.generateValueFromType(implementationType, parentType) as any),
       };
     }
 
@@ -505,16 +561,11 @@ class Mocks {
     }
 
     if (isObjectType(nullableType)) {
-      const fk = this.getRelatedKey(nullableType.name, parentType.name);
-
-      if (fk) {
-        const [source, ...rest] = args;
-        return related({
-          relatedFieldName: fk,
-        }).apply(source, rest);
-      }
-
-      if (!sample) return {};
+      if (!sample)
+        return this.stubIfNeeded(
+          nullableType.name,
+          this.id(nullableType.name),
+        );
 
       const results = this.getAll(nullableType.name);
       return takeRandom(results, faker) || {};
@@ -523,84 +574,59 @@ class Mocks {
     throw new Error(`${nullableType} not implemented`);
   }
 
-  resolve(
-    source: any,
-    args: any,
-    context: any = {},
-    info: MockGraphQLResolveInfo,
-  ): any {
-    if (isRef(source)) {
-      source = this.get(source);
-    }
+  private generateFieldValueFromMocks(
+    typeName: string,
+    fieldName: string,
+    onOtherFieldsGenerated?: (fieldName: string, value: unknown) => void,
+  ): unknown | undefined {
+    let value;
 
-    context.mocks ||= this;
-    info.faker = getFaker(info, source, this, this.fakerCache);
+    const mock = this.mocks[typeName];
 
-    const fieldType = getNullableType(info.returnType);
+    if (mock) {
+      const values = mock(this.getFaker(typeName));
 
-    let defaultResolvedValue = defaultFieldResolver(
-      source,
-      args,
-      context,
-      info,
-    );
+      if (typeof values !== 'object' || values == null) {
+        throw new Error(
+          `Value returned by the mock for ${typeName} is not an object`,
+        );
+      }
 
-    if (isRef(defaultResolvedValue)) {
-      defaultResolvedValue = this.get(defaultResolvedValue);
-    }
-
-    if (defaultResolvedValue !== undefined) {
-      const namedType = getNullableNamedType(fieldType);
-
-      // in the case of an object type, we want to merge in any additional mocks
-      // TODO: we should store the results of this so it's consistent
-      if (isObjectType(namedType)) {
-        if (this.mocks[namedType.name]) {
-          const mockFn = this.mocks[namedType.name]!;
-
-          if (Array.isArray(defaultResolvedValue)) {
-            return defaultResolvedValue.map((item: any) => ({
-              ...(mockFn(item, args, context, info) as any),
-              ...item,
-            }));
-          }
-
-          return {
-            ...(mockFn(source, args, context, info) as any),
-            ...defaultResolvedValue,
-          };
+      for (let [otherFieldKey, otherFieldValue] of Object.entries(values)) {
+        if (otherFieldKey === fieldName) continue;
+        if (typeof otherFieldValue === 'function') {
+          otherFieldValue = otherFieldValue();
         }
+
+        onOtherFieldsGenerated?.(otherFieldKey, otherFieldValue);
       }
-      return defaultResolvedValue;
+
+      value = values[fieldName];
+      if (typeof value === 'function') value = value();
     }
 
-    // we want to avoid the rootType path if
-    // we've already run through it to avoid an infinite loop
-    const hasResolved = info.fieldName in source;
+    if (value !== undefined) return value;
 
-    // root fields don't have a resolver we can intercept.
-    // in order to mock those fields we run the root mocks here
-    // in the child fields and update property
-    if (!hasResolved && isRootType(info.parentType, this.schema)) {
-      const rootMock = this.mocks[info.parentType.name] as any;
+    const type = this.getType(typeName);
+    // GraphQL 14 Compatibility
+    const interfaces = 'getInterfaces' in type ? type.getInterfaces() : [];
 
-      if (rootMock) {
-        const result = rootMock(source, args, context, info)[info.fieldName];
-
-        source = { ...source, [info.fieldName]: result };
-
-        return this.resolve(source, args, context, info);
+    if (interfaces.length > 0) {
+      for (const interface_ of interfaces) {
+        if (value) break;
+        value = this.generateFieldValueFromMocks(
+          interface_.name,
+          fieldName,
+          onOtherFieldsGenerated,
+        );
       }
     }
 
-    const mock = this.mockFromType(fieldType, [
-      source,
-      args,
-      context,
-      info,
-    ]) as MockField;
+    return value;
+  }
 
-    return mock;
+  private isField(typeName: string, fieldName: string) {
+    return fieldName in this.getObjectType(typeName).getFields();
   }
 }
 

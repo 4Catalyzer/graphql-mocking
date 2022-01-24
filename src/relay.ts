@@ -19,6 +19,7 @@ import {
 
 import type { MockFieldResolver, MockGraphQLFieldResolver } from '.';
 import { uuid } from './mocks';
+import { MockFn } from './store';
 import { getNullableNamedType } from './utils';
 
 export {
@@ -40,12 +41,12 @@ function isNodeInterface(intf: GraphQLInterfaceType) {
 }
 
 export const getIdInfo = (id: string) => {
-  const parts = fromGlobalId(id);
+  const parts = fromGlobalId(String(id));
   return toGlobalId(parts.type, parts.id) === id ? parts : null;
 };
 
 export const resolveLocalOrGlobalId = (id: string) => {
-  const parts = fromGlobalId(id);
+  const parts = fromGlobalId(String(id));
   if (toGlobalId(parts.type, parts.id) === id) return parts.id;
   return id;
 };
@@ -99,22 +100,19 @@ export function hasNodeQuery(queryType: GraphQLObjectType) {
   );
 }
 
-export const globalIdMock: MockGraphQLFieldResolver = (
-  src,
-  args,
-  ctx,
-  info,
-) => {
-  const parent = getNullableNamedType(info.parentType);
-  let id = ctx.mocks.getId(src);
+export const globalIdMock: MockFn = (faker): MockFieldResolver => {
+  return function globalIdResolver(_args, ctx, info) {
+    const parent = getNamedType(info.parentType);
+    let id = this.$id || ctx.mocks.getId(this);
 
-  // always treat mock ids as global so we can reverse them
-  if (id) {
-    return toGlobalId(parent.name, id);
-  }
+    // always treat mock ids as global so we can reverse them
+    if (id) {
+      return toGlobalId(parent.name, id);
+    }
 
-  id = uuid(src, args, ctx, info);
-  return implementsNode(parent) ? toGlobalId(parent.name, id) : id;
+    id = uuid(faker);
+    return implementsNode(parent) ? toGlobalId(parent.name, id) : id;
+  };
 };
 
 export const nodeField: MockFieldResolver = ({ id }, { mocks }) => {

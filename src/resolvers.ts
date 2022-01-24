@@ -2,13 +2,13 @@ import { GraphQLResolveInfo, getNullableType, isListType } from 'graphql';
 import { Connection } from 'graphql-relay';
 import { connectionFromArray } from 'graphql-relay/connection/arrayConnection';
 
-import type { MockFieldResolver } from '.';
 import {
   getConnectionNodeType,
   isConnectionType,
   resolveLocalOrGlobalId,
 } from './relay';
-import { Item, getNullableNamedType, valueOrRefId } from './utils';
+import type { MockFieldResolver, MockGraphQLFieldResolver } from './store';
+import { Item, getNullableNamedType, isRef, valueOrRefId } from './utils';
 
 export interface RelatedOptions {
   idFieldName?: string;
@@ -35,8 +35,27 @@ export function filterByArgs<TArgs>(
   };
 }
 
-export function itemById(argName = 'id'): MockFieldResolver {
-  return function resolveById({ [argName]: id }, { mocks }, { returnType }) {
+export function itemByArg(
+  argName: string,
+  mapArg = (arg: any) => arg,
+): MockFieldResolver {
+  return function resolveByArg({ [argName]: arg }, { mocks }, { returnType }) {
+    return (
+      mocks.find(
+        getNullableNamedType(returnType).name,
+        (item) => item[argName] === mapArg(arg),
+      ) ?? null
+    );
+  };
+}
+
+export function itemById(argName = 'id'): MockGraphQLFieldResolver {
+  return function resolveById(
+    _src,
+    { [argName]: id },
+    { mocks },
+    { returnType },
+  ) {
     const localId = resolveLocalOrGlobalId(id);
     return mocks.get(getNullableNamedType(returnType).name, localId) ?? null;
   };
@@ -116,26 +135,28 @@ function assertId(
  * @param options.idFieldName The mock-local field that contains the FK value
  * @param options.relatedFieldName The foreign key field on our list of items. This field must exist
  * on mock objects for the field return type.
- * @returns A `MockFieldResolver` that resolves to a related item or list of related items depending on the graphQL field type.
+ * @returns A `MockGraphQLFieldResolver` that resolves to a related item or list of related items depending on the graphQL field type.
  */
 export function related({
   idFieldName,
   relatedFieldName,
   filter,
-}: RelatedOptions): MockFieldResolver {
+}: RelatedOptions): MockGraphQLFieldResolver {
   if (relatedFieldName == null)
     throw new Error(
       `related() relatedFieldName cannot be empty, please provide a field `,
     );
 
-  return function relatedItemResolver(args, { mocks }, info) {
-    const id = idFieldName ? this[idFieldName] : mocks.getId(this);
+  return function relatedItemResolver(src, args, { mocks }, info) {
+    const mock = isRef(src) ? mocks.get(src) : src;
+
+    const id = idFieldName ? mock[idFieldName] : mocks.getId(mock);
 
     assertId(
       id,
       'related()',
       idFieldName || `${mocks.idField} or $id`,
-      this,
+      mock,
       info,
     );
 
@@ -216,28 +237,29 @@ export function connection({
   relatedFieldName,
   nodeType,
   filter,
-}: ConnectionOptions): MockFieldResolver {
+}: ConnectionOptions): MockGraphQLFieldResolver {
   if (relatedFieldName == null)
     throw new Error(
       `connection() relatedFieldName cannot be empty, please provide a field `,
     );
 
-  return function connectionResolver(args, { mocks }, info) {
+  return function connectionResolver(src, args, { mocks }, info) {
     const { parentType, returnType } = info;
-    const id = idFieldName ? this[idFieldName] : mocks.getId(this);
+    const mock = isRef(src) ? mocks.get(src) : src;
+    const id = idFieldName ? mock[idFieldName] : mocks.getId(mock);
 
     assertId(
       id,
       'connection()',
       idFieldName || `${mocks.idField} or $id`,
-      this,
+      mock,
       info,
     );
     if (!id) {
       throw new Error(
         `connection() is missing an id (field: ${
           idFieldName || mocks.idField
-        }) on source object: ${JSON.stringify(this)}`,
+        }) on source object: ${JSON.stringify(mock)}`,
       );
     }
 

@@ -3,18 +3,20 @@ import fs from 'fs';
 import { GraphQLSchema, graphql } from 'graphql';
 import { toGlobalId } from 'graphql-relay';
 
-import Mocks, { MockTypeMap } from '../src';
+import { addMocksToSchema } from '../src/mockSchema';
+import { globalIdMock } from '../src/relay';
 import { connection, itemById, name, related } from '../src/resolvers';
+import MockStore, { MockTypeMap } from '../src/store';
 
 const typeDefs = fs.readFileSync(`${__dirname}/swapi.graphql`, 'utf-8');
 
 const gql = (template: TemplateStringsArray, ...substitutions: any[]) =>
   String.raw(template, substitutions);
 
-const staticMocks: MockTypeMap = {};
+// const staticMocks: MockTypeMap = {};
 
 describe('mock schema', () => {
-  let mocks: Mocks;
+  let mocks: MockStore;
 
   async function run(s: GraphQLSchema, query: string, variables?: any) {
     const result = await graphql(s, query, {}, variables);
@@ -25,9 +27,9 @@ describe('mock schema', () => {
   }
 
   function getStore() {
-    const store = new Mocks(typeDefs);
+    const store = new MockStore(typeDefs);
 
-    store.mock(staticMocks);
+    // store.define(staticMocks);
 
     return store;
   }
@@ -36,9 +38,14 @@ describe('mock schema', () => {
     mocks = getStore();
   });
 
-  it('should resolve', async () => {
+  it.only('should resolve', async () => {
     const data = await run(
-      mocks.mockedSchema,
+      addMocksToSchema({
+        store: mocks,
+        // resolvers: {
+        //   ID: globalIdMock,
+        // },
+      }),
       gql`
         query {
           allFilms {
