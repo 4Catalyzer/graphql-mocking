@@ -1,5 +1,10 @@
-import { GraphQLResolveInfo, getNullableType, isListType } from 'graphql';
-import { Connection } from 'graphql-relay';
+import {
+  GraphQLObjectType,
+  GraphQLResolveInfo,
+  getNullableType,
+  isListType,
+} from 'graphql';
+import type { Connection } from 'graphql-relay';
 import { connectionFromArray } from 'graphql-relay/connection/arrayConnection';
 
 import {
@@ -187,6 +192,30 @@ export interface ConnectionOptions extends RelatedOptions {
   nodeType?: string;
 }
 
+export function generateConnectionFromArray(
+  nodes: any[],
+  args: any,
+  connectionType: GraphQLObjectType,
+) {
+  const conn = connectionFromArray(nodes, args) as Connection<Item> & {
+    nodes?: Item[];
+    totalCount?: number;
+  };
+  const fields = connectionType.getFields();
+
+  if (fields.nodes) {
+    conn.nodes = conn.edges.map((e) => e.node);
+  }
+  if (fields.totalCount) {
+    conn.totalCount = nodes.length;
+  }
+  if (!fields.edges) {
+    delete (conn as any).edges;
+  }
+
+  return conn;
+}
+
 /**
  * Resolve a connection type to it's related items. Similar to `related` for a list
  * of items, but handles pagination according to the connection arguments, using `connectionFromArray`
@@ -280,23 +309,7 @@ export function connection({
 
     if (filter) nodes = nodes.filter(filter);
 
-    const conn = connectionFromArray(nodes, args) as Connection<Item> & {
-      nodes?: Item[];
-      totalCount?: number;
-    };
-    const fields = connType.getFields();
-
-    if (fields.nodes) {
-      conn.nodes = conn.edges.map((e) => e.node);
-    }
-    if (fields.totalCount) {
-      conn.totalCount = nodes.length;
-    }
-    if (!fields.edges) {
-      delete (conn as any).edges;
-    }
-
-    return conn;
+    return generateConnectionFromArray(nodes, args, connType);
   };
 }
 

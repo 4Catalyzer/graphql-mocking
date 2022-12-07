@@ -19,8 +19,7 @@ import {
 
 import type { MockFieldResolver, MockGraphQLFieldResolver } from '.';
 import { uuid } from './mocks';
-import { MockFn } from './store';
-import { getNullableNamedType } from './utils';
+import type { MockFn } from './store';
 
 export {
   toGlobalId,
@@ -107,7 +106,10 @@ export const globalIdMock: MockFn = (faker): MockFieldResolver => {
 
     // always treat mock ids as global so we can reverse them
     if (id) {
-      return toGlobalId(parent.name, id);
+      const resolvedId = fromGlobalId(id);
+      return resolvedId.type === parent.name && resolvedId.id
+        ? id
+        : toGlobalId(parent.name, id);
     }
 
     id = uuid(faker);

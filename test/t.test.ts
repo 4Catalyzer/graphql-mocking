@@ -21,7 +21,7 @@ describe('testsing', () => {
       generators: (faker) => ({
         producers: [faker.name.firstName(), faker.name.firstName()],
         title: faker.name.title(),
-        episodeID: faker.datatype.number(9),
+        episodeID: 5,
       }),
       examples: [
         {

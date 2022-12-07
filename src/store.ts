@@ -7,6 +7,7 @@ import {
   GraphQLOutputType,
   GraphQLResolveInfo,
   GraphQLSchema,
+  GraphQLType,
   getNamedType,
   getNullableType,
   isAbstractType,
@@ -101,7 +102,11 @@ const takeRandom = <T>(arr: readonly T[], faker: Faker) => {
 };
 
 interface TypeSpec {
-  fks: Record<string, string>;
+  // fks: Record<string, { key: string; foreignKey: null | string }>;
+  related: Record<
+    string,
+    { localFieldName: string; foreignFieldName: string }
+  >;
 }
 
 class Mocks {
@@ -111,11 +116,21 @@ class Mocks {
 
   readonly listLength: number;
 
+  readonly connectionLength: number;
+
   readonly mocked = new Set<string>();
 
   constructor(
     schemaOrSdl: GraphQLSchema | string,
-    { idField }: { idField?: string } = {},
+    {
+      idField,
+      listLength = 2,
+      connectionLength = listLength,
+    }: {
+      idField?: string;
+      listLength?: number;
+      connectionLength?: number;
+    } = {},
   ) {
     this.schema =
       typeof schemaOrSdl === 'string'
@@ -126,7 +141,8 @@ class Mocks {
         : schemaOrSdl;
 
     this.idField = idField ?? 'id';
-    this.listLength = 2;
+    this.listLength = listLength;
+    this.connectionLength = connectionLength;
 
     this.mocks = {
       Int: BaseMocks.int,
@@ -169,8 +185,7 @@ class Mocks {
     const typeName = upperFirst(match[1]);
 
     try {
-      this.getObjectType(typeName);
-      return typeName;
+      return this.getObjectType(typeName);
     } catch {
       throw new Error(
         `related id field "${fieldName}" -> "${typeName}" does not correspond to a schema type`,
@@ -200,19 +215,19 @@ class Mocks {
     return type;
   }
 
-  private getField(
-    type: GraphQLObjectType<any, any> | GraphQLInterfaceType,
-    fieldName: string,
-  ) {
-    const field = type.getFields()[fieldName];
-    if (!field) {
-      throw new Error(`${fieldName} does not exist on type ${type.name}`);
-    }
-    return field;
-  }
+  // private getField(
+  //   type: GraphQLObjectType<any, any> | GraphQLInterfaceType,
+  //   fieldName: string,
+  // ) {
+  //   const field = type.getFields()[fieldName];
+  //   if (!field) {
+  //     throw new Error(`${fieldName} does not exist on type ${type.name}`);
+  //   }
+  //   return field;
+  // }
 
   get mockedSchema() {
-    return addMocksToSchema({ schema: this.schema, store: this });
+    return addMocksToSchema({ store: this });
   }
 
   id(typeName: string) {
@@ -235,9 +250,9 @@ class Mocks {
     let typeName: string;
 
     if (isRef(typeOrRef)) {
+      fieldName = id;
       typeName = typeOrRef.$$ref.type;
       id = typeOrRef.$$ref.id;
-      fieldName = id;
     } else {
       typeName = typeOrRef;
     }
@@ -296,14 +311,14 @@ class Mocks {
     spec: {
       resolver?: MockFieldResolver;
       generators?: MockFn;
-      examples: Record<string, unknown | Ref>[];
+      examples?: Record<string, unknown | Ref>[];
     },
   ) {
     if (spec.generators) {
       this.mock(typeName, spec.generators);
     }
 
-    return this.addExamples(typeName, spec.examples);
+    return this.addExamples(typeName, spec.examples || []);
   }
 
   private mock(typeName: string, mocks: MockFn) {
@@ -331,7 +346,6 @@ class Mocks {
       stored.$id = id;
     }
 
-    const typeSpec = this.typeSpecs.get(typeName) || { fks: {} };
     const fields = type.getFields();
     const providedKeys = new Set();
 
@@ -341,7 +355,12 @@ class Mocks {
 
         const fk = this.getFkFromField(key);
         if (fk) {
-          typeSpec.fks[fk] = key;
+          this.related(type.name, {
+            localFieldName: key,
+            localType: type,
+            foreignFieldName: '$id',
+            foreignType: fk,
+          });
         }
 
         continue;
@@ -360,14 +379,26 @@ class Mocks {
         Array.isArray(value) && typeof value[0] === 'string';
 
       if (isObjectType(fieldType) && typeof value === 'string') {
-        typeSpec.fks[fieldType.name] = key;
+        this.related(key, {
+          localFieldName: key,
+          localType: type,
+          foreignFieldName: '$id',
+          foreignType: fieldType,
+        });
         stored[key] = this.stubIfNeeded(fieldType.name, value);
       } else if (
         isListType(field.type) &&
         isCompositeType(field.type.ofType) &&
         isArrayOfStrings
       ) {
-        typeSpec.fks[fieldType.name] = key;
+        this.related(key, {
+          localFieldName: key,
+          localType: type,
+          foreignFieldName: '$id',
+          // @ts-ignore
+          foreignType: field.type.ofType,
+        });
+        // this.related(key, type, field.type.ofType);
         stored[key] = (value as string[]).map((v) =>
           this.stubIfNeeded(fieldType.name, v),
         );
@@ -377,7 +408,7 @@ class Mocks {
       // }
     }
 
-    this.typeSpecs.set(typeName, typeSpec);
+    // this.typeSpecs.set(typeName, typeSpec);
     this.items.set(id, stored);
 
     let typeData = this.store.get(typeName);
@@ -389,14 +420,81 @@ class Mocks {
     // return this.mockStore.insert(typeName, { ...stored, _id: id }, true);
   }
 
-  getRelatedKey(typeNameA: string, typeNameB: string) {
-    const typeSpec = this.typeSpecs.get(typeNameA);
+  /**
+   bar: [f1, f2]
+
+   Foo.bar -> Bar
+   
+   Bar.foo -> Foo
+
+  ---
+
+  Foo {
+    bar: [b1, b2]
+  }
+
+  ---
+
+  Foo {}
+  Bar { $fooId: f1}
+   
+  ---
+
+  Foo { bar: b1 }
+  Bar { $fooId: f1}
+
+  ---
+  */
+  getRelatedKey(typeName: string, fieldName: string) {
+    const typeSpec = this.typeSpecs.get(typeName);
     if (!typeSpec) return false;
-    return typeSpec.fks[typeNameB];
+
+    // check for a field specific relation and fall back to generic type relationship
+    return typeSpec.related[fieldName] || typeSpec.related[typeName];
   }
 
   ref(typeName: string, id: string): Ref {
     return { $$ref: { type: typeName, id } };
+  }
+
+  related(
+    key: string,
+    {
+      localFieldName,
+      localType,
+      foreignFieldName,
+      foreignType,
+    }: // ,
+    {
+      localFieldName: string;
+      localType: GraphQLObjectType | GraphQLInterfaceType;
+      foreignFieldName: string;
+      foreignType: GraphQLObjectType | GraphQLInterfaceType;
+    },
+  ) {
+    const typeSpec = this.typeSpecs.get(localType.name) || { related: {} };
+
+    typeSpec.related[key] ||= {
+      localFieldName,
+      foreignFieldName,
+    };
+
+    this.typeSpecs.set(localType.name, typeSpec);
+
+    const backRefs = Object.entries(foreignType.getFields()).filter(
+      ([_, config]) => getNamedType(config.type).name === localType.name,
+    );
+
+    if (backRefs.length === 1) {
+      const foreignTypeSpec = this.typeSpecs.get(foreignType.name) || {
+        related: {},
+      };
+      foreignTypeSpec.related[backRefs[0][0]] ||= {
+        localFieldName: foreignFieldName,
+        foreignFieldName: localFieldName,
+      };
+      this.typeSpecs.set(foreignType.name, foreignTypeSpec);
+    }
   }
 
   generateTypeFromMocks(
@@ -485,8 +583,8 @@ class Mocks {
     const nullableType = getNullableType(fieldType);
     const faker = seedFaker(getNamedType(fieldType).name, this.fakerCache);
 
-    const generateList = (type: GraphQLOutputType) => {
-      const list = new Array(this.listLength);
+    const generateList = (type: GraphQLOutputType, length: number) => {
+      const list = new Array(length);
       const results = isCompositeType(type) ? this.getAll(type.name) : [];
 
       for (let idx = 0; idx < list.length; idx++) {
@@ -499,13 +597,14 @@ class Mocks {
     };
 
     if (isListType(nullableType)) {
-      return generateList(nullableType.ofType);
+      return generateList(nullableType.ofType, this.listLength);
     }
-
+    // connections are just 1 to many collections
     if (isConnectionType(nullableType)) {
-      const nodeType = getConnectionNodeType(nullableType);
-
-      return connectionFromArray(generateList(nodeType), { first: 100 });
+      return generateList(
+        getConnectionNodeType(nullableType),
+        this.connectionLength,
+      );
     }
 
     const mockFn = this.mocks[nullableType.name];
@@ -574,56 +673,56 @@ class Mocks {
     throw new Error(`${nullableType} not implemented`);
   }
 
-  private generateFieldValueFromMocks(
-    typeName: string,
-    fieldName: string,
-    onOtherFieldsGenerated?: (fieldName: string, value: unknown) => void,
-  ): unknown | undefined {
-    let value;
+  // private generateFieldValueFromMocks(
+  //   typeName: string,
+  //   fieldName: string,
+  //   onOtherFieldsGenerated?: (fieldName: string, value: unknown) => void,
+  // ): unknown | undefined {
+  //   let value;
 
-    const mock = this.mocks[typeName];
+  //   const mock = this.mocks[typeName];
 
-    if (mock) {
-      const values = mock(this.getFaker(typeName));
+  //   if (mock) {
+  //     const values = mock(this.getFaker(typeName));
 
-      if (typeof values !== 'object' || values == null) {
-        throw new Error(
-          `Value returned by the mock for ${typeName} is not an object`,
-        );
-      }
+  //     if (typeof values !== 'object' || values == null) {
+  //       throw new Error(
+  //         `Value returned by the mock for ${typeName} is not an object`,
+  //       );
+  //     }
 
-      for (let [otherFieldKey, otherFieldValue] of Object.entries(values)) {
-        if (otherFieldKey === fieldName) continue;
-        if (typeof otherFieldValue === 'function') {
-          otherFieldValue = otherFieldValue();
-        }
+  //     for (let [otherFieldKey, otherFieldValue] of Object.entries(values)) {
+  //       if (otherFieldKey === fieldName) continue;
+  //       if (typeof otherFieldValue === 'function') {
+  //         otherFieldValue = otherFieldValue();
+  //       }
 
-        onOtherFieldsGenerated?.(otherFieldKey, otherFieldValue);
-      }
+  //       onOtherFieldsGenerated?.(otherFieldKey, otherFieldValue);
+  //     }
 
-      value = values[fieldName];
-      if (typeof value === 'function') value = value();
-    }
+  //     value = values[fieldName];
+  //     if (typeof value === 'function') value = value();
+  //   }
 
-    if (value !== undefined) return value;
+  //   if (value !== undefined) return value;
 
-    const type = this.getType(typeName);
-    // GraphQL 14 Compatibility
-    const interfaces = 'getInterfaces' in type ? type.getInterfaces() : [];
+  //   const type = this.getType(typeName);
+  //   // GraphQL 14 Compatibility
+  //   const interfaces = 'getInterfaces' in type ? type.getInterfaces() : [];
 
-    if (interfaces.length > 0) {
-      for (const interface_ of interfaces) {
-        if (value) break;
-        value = this.generateFieldValueFromMocks(
-          interface_.name,
-          fieldName,
-          onOtherFieldsGenerated,
-        );
-      }
-    }
+  //   if (interfaces.length > 0) {
+  //     for (const interface_ of interfaces) {
+  //       if (value) break;
+  //       value = this.generateFieldValueFromMocks(
+  //         interface_.name,
+  //         fieldName,
+  //         onOtherFieldsGenerated,
+  //       );
+  //     }
+  //   }
 
-    return value;
-  }
+  //   return value;
+  // }
 
   private isField(typeName: string, fieldName: string) {
     return fieldName in this.getObjectType(typeName).getFields();

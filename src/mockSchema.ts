@@ -2,6 +2,7 @@ import { addResolversToSchema } from '@graphql-tools/schema';
 import {
   IAddResolversToSchemaOptions,
   MapperKind,
+  SchemaMapper,
   mapSchema,
 } from '@graphql-tools/utils';
 import {
@@ -15,7 +16,7 @@ import {
   getNamedType,
   getNullableType,
   isListType,
-  isSchema,
+  isObjectType,
   isUnionType,
 } from 'graphql';
 
@@ -25,14 +26,16 @@ import {
   isConnectionType,
   nodeMock,
 } from './relay';
-import { connection, related } from './resolvers';
+import { connection, generateConnectionFromArray, related } from './resolvers';
 import type Mocks from './store';
 import { isRef, isRootType } from './utils';
 
+export { MapperKind };
 export interface MockOptions {
   // schema: GraphQLSchema;
   store: Mocks;
   resolvers?: IAddResolversToSchemaOptions['resolvers'];
+  // schemaMapper?: SchemaMapper;
 }
 
 export function addMocksToSchema({
@@ -72,38 +75,59 @@ export function addMocksToSchema({
 
     let resolvedField;
     let resolvedParent = isRef(src) ? store.get(src) : src;
+    const isConnection = isConnectionType(fieldType);
 
     if (isRootType(info.parentType, info.schema)) {
       resolvedParent = store.get(info.parentType.name, 'ROOT');
     }
 
-    if (isListType(fieldType)) {
+    if (isObjectType(fieldType)) {
+      const fk = store.getRelatedKey(parentType.name, info.fieldName);
+
+      if (fk) {
+        return related({
+          idFieldName: fk.localFieldName,
+          relatedFieldName: fk.foreignFieldName,
+        }).call(resolvedParent, resolvedParent, args, ctx, info);
+      }
+    } else if (isListType(fieldType)) {
       const listType = getNamedType(fieldType);
       const fk = store.getRelatedKey(listType.name, parentType.name);
       if (fk) {
         return related({
-          relatedFieldName: fk,
-        }).apply(resolvedParent, [args, ctx, info]);
+          idFieldName: fk.localFieldName,
+          relatedFieldName: fk.foreignFieldName,
+        }).call(resolvedParent, resolvedParent, args, ctx, info);
       }
-    } else if (isConnectionType(fieldType)) {
+    } else if (isConnection) {
       const nodeType = getConnectionNodeType(fieldType);
       const fk = store.getRelatedKey(nodeType.name, parentType.name);
 
       if (fk) {
         return connection({
-          relatedFieldName: fk,
-        }).apply(resolvedParent, [args, ctx, info]);
+          idFieldName: fk.localFieldName,
+          relatedFieldName: fk.foreignFieldName,
+        }).apply(resolvedParent, [src, args, ctx, info]);
       }
     }
 
     resolvedField = resolvedParent[info.fieldName];
 
-    if (resolvedParent[info.fieldName] === undefined)
+    if (resolvedParent[info.fieldName] === undefined) {
       resolvedField = store.generateTypeFromMocks(
         parentType.name,
         store.getId(resolvedParent),
         info.fieldName,
       );
+
+      if (isConnection) {
+        resolvedField = generateConnectionFromArray(
+          resolvedField,
+          args,
+          fieldType,
+        );
+      }
+    }
 
     ctx ||= {};
     ctx.mocks ||= store;
@@ -115,9 +139,8 @@ export function addMocksToSchema({
   };
 
   const typeResolver: GraphQLTypeResolver<any, any> = (data) => {
-    return schema.getType(
-      isRef(data) ? data.$$ref.type : data.__typename,
-    ) as GraphQLObjectType;
+    return schema.getType(isRef(data) ? data.$$ref.type : data.__typename)
+      ?.name;
   };
 
   const schemaWithMocks = mapSchema(schema, {

@@ -1,12 +1,13 @@
 import fs from 'fs';
 
+import { mockServer } from '@graphql-tools/mock';
 import { GraphQLSchema, graphql } from 'graphql';
 import { toGlobalId } from 'graphql-relay';
 
 import { addMocksToSchema } from '../src/mockSchema';
 import { globalIdMock } from '../src/relay';
 import { connection, itemById, name, related } from '../src/resolvers';
-import MockStore, { MockTypeMap } from '../src/store';
+import MockStore from '../src/store';
 
 const typeDefs = fs.readFileSync(`${__dirname}/swapi.graphql`, 'utf-8');
 
@@ -18,8 +19,14 @@ const gql = (template: TemplateStringsArray, ...substitutions: any[]) =>
 describe('mock schema', () => {
   let mocks: MockStore;
 
-  async function run(s: GraphQLSchema, query: string, variables?: any) {
-    const result = await graphql(s, query, {}, variables);
+  async function run(schema: GraphQLSchema, query: string, variables?: any) {
+    const result = await graphql({
+      schema,
+      source: query,
+      rootValue: {},
+      contextValue: { mocks },
+      variableValues: variables,
+    });
     if (result.errors?.length) {
       throw new Error(`Request failed: ${result.errors[0].message}`);
     }
@@ -27,7 +34,7 @@ describe('mock schema', () => {
   }
 
   function getStore() {
-    const store = new MockStore(typeDefs);
+    const store = new MockStore(typeDefs, { connectionLength: 10 });
 
     // store.define(staticMocks);
 
@@ -54,6 +61,7 @@ describe('mock schema', () => {
               title
               episodeID
             }
+            totalCount
           }
         }
       `,
@@ -65,16 +73,17 @@ Object {
     "allFilms": Object {
       "films": Array [
         Object {
-          "episodeID": 28,
-          "id": "RmlsbTo1OGZhNjQ3ZS05YTE5LTRmZWUtYWRkYi1mYjg0OWNjZjNmMmQ=",
-          "title": "initiative",
+          "episodeID": 42,
+          "id": "RmlsbTpGaWxtOjQ=",
+          "title": "circuit",
         },
         Object {
-          "episodeID": 101,
-          "id": "RmlsbTo0ZWQ5MjU4Mi1iN2EwLTQ0OWMtODY4My02ZTgwOTcxZjRkZTE=",
-          "title": "conglomeration",
+          "episodeID": 2,
+          "id": "RmlsbTpGaWxtOjY=",
+          "title": "Mississippi",
         },
       ],
+      "totalCount": 10,
     },
   },
 }
@@ -94,14 +103,14 @@ Object {
     );
 
     expect({ data }).toMatchInlineSnapshot(`
-  Object {
-    "data": Object {
-      "person": Object {
-        "name": "matrix",
-      },
+Object {
+  "data": Object {
+    "person": Object {
+      "name": "circuit",
     },
-  }
-  `);
+  },
+}
+`);
   });
 
   describe('sampling', () => {
@@ -143,20 +152,7 @@ Object {
         Object {
           "characters": Array [
             Object {
-              "name": "Leia Skywalker",
-            },
-            Object {
               "name": "Luke Skywalker",
-            },
-          ],
-          "episodeID": 5,
-          "id": "RmlsbTpmMg==",
-          "title": "The Empire Strikes Back",
-        },
-        Object {
-          "characters": Array [
-            Object {
-              "name": "Han Solo",
             },
             Object {
               "name": "Leia Skywalker",
@@ -165,6 +161,19 @@ Object {
           "episodeID": 4,
           "id": "RmlsbTpmMQ==",
           "title": "A New Hope",
+        },
+        Object {
+          "characters": Array [
+            Object {
+              "name": "Leia Skywalker",
+            },
+            Object {
+              "name": "Han Solo",
+            },
+          ],
+          "episodeID": 5,
+          "id": "RmlsbTpmMg==",
+          "title": "The Empire Strikes Back",
         },
       ],
     },
@@ -267,7 +276,7 @@ Object {
     });
 
     const result = await run(
-      mocks.mockedSchema,
+      addMocksToSchema({ store: mocks }),
       gql`
         query {
           film {
@@ -326,20 +335,23 @@ Object {
   });
 
   it('should generate real connections', async () => {
-    mocks.mock({
-      Person: () => ({ name }),
+    mocks.define('Person', {
+      generators: (faker) => ({
+        name: faker.name.findName(),
+      }),
     });
 
     const data = await run(
       mocks.mockedSchema,
       gql`
         query {
-          allPeople(first: 1) {
+          allPeople(first: 5) {
             edges {
               node {
                 name
               }
             }
+            totalCount
             pageInfo {
               hasNextPage
             }
@@ -353,27 +365,50 @@ Object {
   "edges": Array [
     Object {
       "node": Object {
-        "name": "Crystal Ziemann",
+        "name": "Rene Reilly",
+      },
+    },
+    Object {
+      "node": Object {
+        "name": "Garry Feil",
+      },
+    },
+    Object {
+      "node": Object {
+        "name": "Amy Boyer",
+      },
+    },
+    Object {
+      "node": Object {
+        "name": "Jennie Bartell III",
+      },
+    },
+    Object {
+      "node": Object {
+        "name": "Barry Runolfsson",
       },
     },
   ],
   "pageInfo": Object {
     "hasNextPage": true,
   },
+  "totalCount": 10,
 }
 `);
   });
 
   it('should resolve to examples', async () => {
-    mocks.mock('Root', () => ({
-      allFilms: () => ({
-        films: () => mocks.getAll('Film'),
-      }),
-    }));
+    // mocks.define('Root', () => ({
+    //   allFilms: () => ({
+    //     films: () => mocks.getAll('Film'),
+    //   }),
+    // }));
 
-    mocks.mock('Film', () => ({
-      director: name,
-    }));
+    mocks.define('Film', {
+      generators: (faker) => ({
+        director: faker.name.findName(),
+      }),
+    });
 
     mocks.addExamples('Film', [
       {
@@ -407,13 +442,13 @@ Object {
     expect(result.allFilms.films).toMatchInlineSnapshot(`
 Array [
   Object {
-    "director": "Vernon Wintheiser",
+    "director": "Betsy Zemlak",
     "episodeID": 4,
     "id": "RmlsbTox",
     "title": "A new Hope",
   },
   Object {
-    "director": "Darin Cartwright",
+    "director": "Hazel Pfannerstill",
     "episodeID": 8,
     "id": "RmlsbToy",
     "title": "The Last Jedi",
@@ -473,27 +508,39 @@ Object {
     `;
 
     it('should find related items when configured', async () => {
-      mocks.addExample('Species', {
-        $id: 's1',
-        name: 'Human',
+      mocks.define('Species', {
+        generators: (faker, db) => ({
+          people: db.related(),
+        }),
+        examples: [
+          {
+            $id: 's1',
+            name: 'Human',
+          },
+        ],
       });
 
-      mocks.addExamples('Person', [
-        {
-          $id: 'p1',
+      mocks.define('Person', {
+        // generators: (faker) => ({
+        //   species: db.related(''),
+        // }),
+        examples: [
+          {
+            $id: 'p1',
 
-          species: 's1',
-          name: 'Luke Skywalker',
-        },
-        {
-          $id: 'p2',
+            species: 's1',
+            name: 'Luke Skywalker',
+          },
+          {
+            $id: 'p2',
 
-          species: 's1',
-          name: 'Leia Skywalker',
-        },
-      ]);
+            species: 's1',
+            name: 'Leia Skywalker',
+          },
+        ],
+      });
 
-      mocks.mock({
+      mocks.resolvers({
         Root: () => ({
           species: itemById(),
         }),
@@ -584,9 +631,11 @@ Object {
     });
 
     it('should automatically link FKs', async () => {
-      mocks.mock('Root', () => ({
-        species: itemById(),
-      }));
+      const resolvers = {
+        Root: {
+          species: itemById(),
+        },
+      };
 
       mocks.addExample('Species', {
         $id: 's1',
@@ -608,7 +657,10 @@ Object {
         },
       ]);
 
-      const data = await run(mocks.mockedSchema, speciesQuery);
+      const data = await run(
+        addMocksToSchema({ store: mocks, resolvers }),
+        speciesQuery,
+      );
 
       expect(data.species).toEqual({
         name: 'Human',
@@ -619,11 +671,12 @@ Object {
       });
     });
 
-    it('should automatically link parent -> child', async () => {
-      mocks.mock('Root', () => ({
-        species: itemById(),
-      }));
-
+    it.only('should automatically link parent -> child with a backref', async () => {
+      const resolvers = {
+        Root: {
+          species: itemById(),
+        },
+      };
       mocks.addExamples('Species', [
         {
           $id: 's1',
@@ -652,7 +705,10 @@ Object {
         },
       ]);
 
-      const data = await run(mocks.mockedSchema, speciesQuery);
+      const data = await run(
+        addMocksToSchema({ store: mocks, resolvers }),
+        speciesQuery,
+      );
 
       expect(data.species).toEqual({
         name: 'Human',
@@ -663,10 +719,12 @@ Object {
       });
     });
 
-    it('should automatically link explicit FKs', async () => {
-      mocks.mock('Root', () => ({
-        species: itemById(),
-      }));
+    it.only('should automatically link explicit FKs', async () => {
+      const resolvers = {
+        Root: {
+          species: itemById(),
+        },
+      };
 
       mocks.addExample('Species', {
         $id: 's1',
@@ -686,8 +744,11 @@ Object {
         },
       ]);
 
-      const data = await run(mocks.mockedSchema, speciesQuery);
-
+      const data = await run(
+        addMocksToSchema({ store: mocks, resolvers }),
+        speciesQuery,
+      );
+      console.log(data);
       expect(data.species).toEqual({
         name: 'Human',
         people: [
